@@ -15,23 +15,29 @@ die() { EXITCODE=$1; shift; printf '%s\n' "$*"; exit $EXITCODE; }
 [ -z "$DOCUMENT_ID" ] && die 8 Undefined / empty DOCUMENT_ID
 
 # Ensure that the PDF document was generated.
-URL="$(curl -d '' \
-  https://www.overleaf.com/docs/"$DOCUMENT_ID"/pdf |
-  sed -r -n '/"https?:.*\.pdf"/s#.*"(https?://[^"]*\.pdf)".*#\1#p')"
-[ -z "$URL" ] && die 9 Unexpected response when generating PDF
-curl "$URL" | head -c 1 >/dev/null ||
-  die 10 Unexpected response when generating PDF
+RESPONSE=`mktemp`
+trap 'rm $RESPONSE' EXIT
+echo setTimeout >$RESPONSE
+while grep -qF setTimeout <$RESPONSE; do
+  curl -s -d '' https://www.overleaf.com/docs/"$DOCUMENT_ID"/pdf >$RESPONSE
+  grep -qF "Sorry, we couldn't build a PDF" <$RESPONSE &&
+    die 9 Error when generating PDF
+  grep -qF setTimeout <$RESPONSE && sleep 5s
+done
+
+URL="$(sed -r -n '/"https?:.*\.pdf"/s#.*"(https?://[^"]*\.pdf)".*#\1#p' <$RESPONSE)"
+[ -z "$URL" ] && die 10 Unexpected response when generating PDF
+curl -s "$URL" | head -c 1 >/dev/null ||
+  die 11 Unexpected response when generating PDF
 
 # Retrieve a ticket number.
-TICKET="$(curl -b $COOKIE_JAR \
+TICKET="$(curl -s -b $COOKIE_JAR \
   https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery |
   xmllint --html --xpath "//input[@name='authenticity_token']/@value" - 2>/dev/null |
   sed -n -r '/^ value=".*"$/s/^ value="(.*)"$/\1\n/p')"
-[ -z "$TICKET" ] && die 11 Failed to download ticket number
+[ -z "$TICKET" ] && die 12 Failed to download ticket number
 
 # Publish the document.
-RESPONSE=`mktemp`
-trap 'rm $RESPONSE' EXIT
 curl --form-string utf8='✓' \
      --form-string authenticity_token="$TICKET" \
      --form-string published_ver[title]="$TITLE" \
@@ -40,7 +46,7 @@ curl --form-string utf8='✓' \
      --form-string published_ver[license]="$LICENSE" \
      --form-string published_ver[show_source]="$SHOW_SOURCE" \
      --form-string commit='Submit to Overleaf Gallery' \
-     -b "$COOKIE_JAR" >$RESPONSE \
+     -s -b "$COOKIE_JAR" >$RESPONSE \
      https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery
 grep <$RESPONSE -qF 'Thanks for submitting to our gallery!' ||
-  die 12 Upload failed: "`cat $RESPONSE`"
+  die 13 Upload failed: "`cat $RESPONSE`"
