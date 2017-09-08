@@ -19,7 +19,8 @@ RESPONSE=`mktemp`
 trap 'rm $RESPONSE' EXIT
 echo setTimeout >$RESPONSE
 while grep -qF setTimeout <$RESPONSE; do
-  curl -s -d '' https://www.overleaf.com/docs/"$DOCUMENT_ID"/pdf >$RESPONSE
+  curl -H 'x-requested-with: XMLHttpRequest' \
+    https://www.overleaf.com/docs/"$DOCUMENT_ID"/pdf >$RESPONSE
   grep -qF "Sorry, we couldn't build a PDF" <$RESPONSE &&
     die 9 Error when generating PDF
   grep -qF setTimeout <$RESPONSE && sleep 5s
@@ -27,11 +28,11 @@ done
 
 URL="$(sed -r -n '/"https?:.*\.pdf"/s#.*"(https?://[^"]*\.pdf)".*#\1#p' <$RESPONSE)"
 [ -z "$URL" ] && die 10 Unexpected response when generating PDF
-curl -s "$URL" | head -c 1 >/dev/null ||
+curl -H 'x-requested-with: XMLHttpRequest' -s "$URL" | head -c 1 >/dev/null ||
   die 11 Unexpected response when generating PDF
 
 # Retrieve a ticket number.
-TICKET="$(curl -s -b $COOKIE_JAR \
+TICKET="$(curl -H 'x-requested-with: XMLHttpRequest' -s -b $COOKIE_JAR \
   https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery |
   xmllint --html --xpath "//input[@name='authenticity_token']/@value" - 2>/dev/null |
   sed -n -r '/^ value=".*"$/s/^ value="(.*)"$/\1\n/p')"
@@ -46,6 +47,7 @@ curl --form-string utf8='✓' \
      --form-string published_ver[license]="$LICENSE" \
      --form-string published_ver[show_source]="$SHOW_SOURCE" \
      --form-string commit='Submit to Overleaf Gallery' \
+     -H 'x-requested-with: XMLHttpRequest' \
      -s -b "$COOKIE_JAR" >$RESPONSE \
      https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery
 grep <$RESPONSE -qF 'Thanks for submitting to our gallery!' ||
