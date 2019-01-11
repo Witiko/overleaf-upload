@@ -14,41 +14,54 @@ die() { EXITCODE=$1; shift; printf '%s\n' "$*"; exit $EXITCODE; }
 [ -e "$COOKIE_JAR" ] || die 7 $COOKIE_JAR does not exist
 [ -z "$DOCUMENT_ID" ] && die 8 Undefined / empty DOCUMENT_ID
 
-# Ensure that the PDF document was generated.
+curl_() {
+  curl -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:64.0) Gecko/20100101 Firefox/64.0' -s --retry 5 --location -b "$COOKIE_JAR" "$@"
+}
+
 RESPONSE=`mktemp`
 trap 'rm $RESPONSE' EXIT
-echo setTimeout >$RESPONSE
-while grep -qF setTimeout <$RESPONSE; do
-  curl -H 'x-requested-with: XMLHttpRequest' \
-    https://www.overleaf.com/docs/"$DOCUMENT_ID"/pdf >$RESPONSE
-  grep -qF "Sorry, we couldn't build a PDF" <$RESPONSE &&
-    die 9 Error when generating PDF
-  grep -qF setTimeout <$RESPONSE && sleep 5s
+
+echo 'Retrieving CSRF token' >&2
+curl_ https://www.overleaf.com/project/$DOCUMENT_ID >$RESPONSE
+if grep --silent csrfToken <$RESPONSE
+then
+  CSRF_TOKEN="$(sed -nr '/window\.csrfToken/s/.*window\.csrfToken = "([^"]*)".*/\1/p' <$RESPONSE | head -n 1)"
+else
+  die 9 Cannot retrieve CSRF token from the project page: "`cat $RESPONSE`"
+fi
+
+echo 'Publishing document' >&2
+curl_ https://www.overleaf.com/project/$DOCUMENT_ID/export/96 \
+  -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+  -H 'X-CSRF-Token: '"$CSRF_TOKEN" \
+  -H 'X-Requested-With: XMLHttpRequest' \
+  --data-urlencode title="$TITLE" \
+  --data-urlencode author="$AUTHOR" \
+  --data-urlencode description="$DESCRIPTION" \
+  --data-urlencode license="$LICENSE" \
+  --data-urlencode showSource="$SHOW_SOURCE" \
+  >$RESPONSE
+if ! grep --silent 'export_v1_id' <$RESPONSE
+then
+  die 10 Publishing failed '(post)': "`cat $RESPONSE`"
+else
+  EXPORT_ID="$(sed -r 's/.*"export_v1_id":(.*)[},].*/\1/' <$RESPONSE)"
+fi
+
+echo '"status_summary":"pending","status_detail":"Starting up"' >$RESPONSE
+while grep --silent -F '"status_summary":"pending"' <$RESPONSE
+do
+  STATUS_SUMMARY="$(sed -r 's/.*"status_summary":"([^"]*)".*/\1/' <$RESPONSE)"
+  STATUS_DETAIL="$(sed -r 's/.*"status_detail":"([^"]*)".*/\1/' <$RESPONSE)"
+  printf 'Waiting for document to be published (%s: %s)\n' "$STATUS_SUMMARY" "$STATUS_DETAIL" >&2
+  curl_ https://www.overleaf.com/project/5c381f90819e564c3d6152cc/export/$EXPORT_ID \
+    >$RESPONSE
+  sleep 5s
 done
 
-URL="$(sed -r -n '/"https?:.*\.pdf"/s#.*"(https?://[^"]*\.pdf)".*#\1#p' <$RESPONSE)"
-[ -z "$URL" ] && die 10 Unexpected response when generating PDF
-curl -H 'x-requested-with: XMLHttpRequest' -s "$URL" | head -c 1 >/dev/null ||
-  die 11 Unexpected response when generating PDF
+if ! grep --silent -F '"status_summary":"succeeded"' <$RESPONSE
+then
+  die 11 Publishing failed '(status)': "`cat $RESPONSE`"
+fi
 
-# Retrieve a ticket number.
-TICKET="$(curl -H 'x-requested-with: XMLHttpRequest' -s -b $COOKIE_JAR \
-  https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery |
-  xmllint --html --xpath "//input[@name='authenticity_token']/@value" - 2>/dev/null |
-  sed -n -r '/^ value=".*"$/s/^ value="(.*)"$/\1\n/p')"
-[ -z "$TICKET" ] && die 12 Failed to download ticket number
-
-# Publish the document.
-curl --form-string utf8='✓' \
-     --form-string authenticity_token="$TICKET" \
-     --form-string published_ver[title]="$TITLE" \
-     --form-string published_ver[author]="$AUTHOR" \
-     --form-string published_ver[description]="$DESCRIPTION" \
-     --form-string published_ver[license]="$LICENSE" \
-     --form-string published_ver[show_source]="$SHOW_SOURCE" \
-     --form-string commit='Submit to Overleaf Gallery' \
-     -H 'x-requested-with: XMLHttpRequest' \
-     -s -b "$COOKIE_JAR" >$RESPONSE \
-     https://www.overleaf.com/docs/"$DOCUMENT_ID"/exports/gallery
-grep <$RESPONSE -qF 'Thanks for submitting to our gallery!' ||
-  die 13 Upload failed: "`cat $RESPONSE`"
+echo Done! >&2

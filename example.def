@@ -2,7 +2,7 @@ TITLE='Writing Beamer Slides with Markdown'
 AUTHOR='LianTze Lim'
 DESCRIPTION="The markdown package makes it possible to use markdown in LaTeX documents. Now here's an example to show how markdown can be used to create beamer presentations."
 LICENSE=cc_by_4.0
-SHOW_SOURCE=1
+SHOW_SOURCE=true
 
 COOKIE_JAR=/path/to/my_cookie_jar.txt
 DOCUMENT_ID=abcdefghijkl
